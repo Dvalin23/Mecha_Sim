@@ -210,10 +210,27 @@ export function validateProject(payload) {
   }
   if (errors.length) return { ok: false, data: null, errors }
   for (const node of data.nodes) {
-    if (node.properties?.rules && Array.isArray(node.properties.rules)) {
-      const rules = node.properties.rules
-      if (rules.length > LIMITS.maxRules) {
-        return { ok: false, data: null, errors: [{ path: `${node.id}.properties.rules`, message: `at most ${LIMITS.maxRules} rules` }] }
+    if (!Array.isArray(node.properties?.rules)) continue
+    const rules = node.properties.rules
+    if (rules.length > LIMITS.maxRules) {
+      return { ok: false, data: null, errors: [{ path: `${node.id}.properties.rules`, message: `at most ${LIMITS.maxRules} rules` }] }
+    }
+    // `properties` is an open record (each device class owns its own shape), so
+    // the per-type meaning of a property has to be checked here. A controller's
+    // rules are the interesting case: they are code-like data the engine *runs*
+    // every scan, and an unvalidated rule is the one place a payload could try
+    // to steer control flow.
+    for (let i = 0; i < rules.length; i++) {
+      const parsed = ruleSchema.safeParse(rules[i])
+      if (!parsed.success) {
+        return {
+          ok: false,
+          data: null,
+          errors: formatZodIssues(parsed.error).map((issue) => ({
+            path: `${node.id}.rules.${i}.${issue.path}`,
+            message: issue.message,
+          })),
+        }
       }
     }
   }

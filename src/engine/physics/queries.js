@@ -45,8 +45,12 @@ function raycastPolygon(body, ox, oy, dx, dy, maxDistance) {
     const denominator = n.dot({ x: dx, y: dy })
     const distance = n.dot({ x: v.x - ox, y: v.y - oy })
     if (Math.abs(denominator) < 1e-9) {
-      // Ray parallel to this face: outside the slab means no intersection.
-      if (distance > 0) return null
+      // Ray parallel to this face. `distance` is n·(v − o), so the ray is inside
+      // this face's half-space when it is ≥ 0 and outside (⇒ no intersection
+      // with a convex polygon) when it is < 0. Getting this backwards rejects
+      // every axis-aligned ray against an axis-aligned box — which is precisely
+      // how a rangefinder is aimed at a wall.
+      if (distance < 0) return null
       continue
     }
     const t = distance / denominator

@@ -8,10 +8,18 @@ import { clamp, rcAlpha, ema } from '../math/utils.js'
 /**
  * Centrifugal pump.
  *
- * Electrically it is a switch: `power` HIGH → running. Physically it is a
- * velocity field applied to every fluid particle inside `radius`:
+ * Electrically it is a switch: `power` HIGH → running. Physically it is an
+ * impeller with a mouth and a delivery: water inside `radius * 0.25` of the
+ * nozzle is taken in (nearest first) and thrown along the nozzle's axis at
  *
- *     F(p) = strength · (1 − d/r) · d̂  +  swirl · tangential
+ *     v = √(2 · strength · eyeRadius)          — capped at `maxJetSpeed`
+ *
+ * which is the ejection speed that makes `strength` behave like an acceleration
+ * rather than a vague push. Everything else in the `radius` feels a gentle
+ * inward draw that refills the eye but can never hold water up against gravity.
+ * `launchAngle` tilts the throw off the nozzle's own axis, so a pump can be aimed
+ * at a chute or a tank instead of being limited to the direction it is mounted
+ * in; intake and launch are documented in `FluidSystem.applyIntake`.
  *
  * The `spinUpMs` time constant is a first-order lag on the impeller speed, so
  * the pump ramps exactly like a motor with inertia — which is what gives the
@@ -40,6 +48,7 @@ export class Pump extends Component {
     { key: 'strength', label: 'Draft accel', type: 'number', min: 0, max: 6000, step: 50, default: 1800, unit: 'cm/s²' },
     { key: 'radius', label: 'Draft radius', type: 'number', min: 30, max: 500, step: 10, default: 200, unit: 'cm' },
     { key: 'swirl', label: 'Swirl', type: 'number', min: -2000, max: 2000, step: 20, default: 200, unit: 'cm/s²' },
+    { key: 'launchAngle', label: 'Launch angle', type: 'number', min: -90, max: 90, step: 1, default: 0, unit: '°' }, // offset from the nozzle axis
     { key: 'spinUpMs', label: 'Spin-up', type: 'number', min: 20, max: 4000, step: 20, default: 420, unit: 'ms' },
     { key: 'maxRpm', label: 'Rated speed', type: 'number', min: 60, max: 760, step: 20, default: 600, unit: 'rpm' },
   ]
@@ -131,13 +140,21 @@ export class Pump extends Component {
     if (this.state.running) {
       const direction = this.state.rpm < 0 ? -1 : 1
       const forceDirection = new Vec2(Math.cos(this.rotation), Math.sin(this.rotation)).scale(direction)
-      this.state.affected = this.fluid.applyFlowField(
-        this.nozzlePoint,
-        forceDirection,
-        props.radius,
-        props.strength * Math.abs(load),
-        props.swirl * Math.abs(load),
-      )
+      // Draft scales with the load *inside* the model: both the suction and the
+      // jet speed fall off as the impeller spins down.
+      // The draft scales with the load *inside* the model: both the suction and
+      // the jet speed fall off as the impeller spins down. Water leaves along the
+      // pump's own axis, tilted by `launchAngle`: 0° is "straight out of the
+      // nozzle", +30° tips the jet 30° further round, and a user can aim it at a
+      // chute from the inspector.
+      this.state.affected = this.fluid.applyIntake(this.nozzlePoint, forceDirection, dt, {
+        radius: props.radius,
+        strength: props.strength * Math.abs(load),
+        swirl: props.swirl * Math.abs(load),
+        eyeRadius: props.radius * 0.25,
+        launchSlope: this.rotation + (props.launchAngle * Math.PI) / 180,
+      })
+      this.state.jetSpeed = this.fluid.lastJetSpeed
       this.state.flow = this.state.affected * Math.abs(load)
     } else {
       this.state.affected = 0

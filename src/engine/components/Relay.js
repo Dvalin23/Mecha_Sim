@@ -69,7 +69,10 @@ export class Relay extends Component {
     this.bodies = [housing]
     this.state = {
       ...this.state,
-      closed: false,
+      // A normally-closed contact is *closed* the moment it is energised by
+      // nothing at all — starting it at `false` made the panel (and the canvas)
+      // show OPEN until the first simulation step ran.
+      closed: this.properties.mode === 'normally-closed',
       coil: false,
       pending: null,
       pendingUntil: 0,

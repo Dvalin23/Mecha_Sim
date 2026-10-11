@@ -115,8 +115,17 @@ export class FluidSystem {
           allowSleep: true,
           continuous: false,
         })
-        body.inertia = 1
-        body.invInertia = 1
+        // Droplets do not rotate. A circle's real inertia would be ½mr², but
+        // leaving an arbitrary `invInertia = 1` gives a 5 px droplet roughly 20×
+        // its physical spin response — and friction acts 5 px off-centre, so the
+        // contact torque dominates. The symptom is not a subtle one: beads roll
+        // *uphill* on an 8° ice tray, oscillate around a phantom equilibrium and
+        // a heap of them locks solid (measured: a pile that never drained with
+        // the sluice wide open). Suppressing the rotational degree of freedom is
+        // both cheaper and more faithful — water in this model is a spray of
+        // sliding particles, not a bag of ball bearings.
+        body.inertia = 0
+        body.invInertia = 0
       }
     }
     body.removed = false
@@ -228,45 +237,149 @@ export class FluidSystem {
   }
 
   /**
-   * Push every droplet inside `radius` toward `direction`.
+   * The nearest point along a bearing where a droplet can be released without
+   * being born inside solid geometry.
    *
-   * This is an **acceleration field**, not a force field: the applied force is
-   * scaled by each droplet's own mass, so the pump lifts a light mist and a
-   * heavy slug of water identically. (A raw force field would fling low-mass
-   * particles at absurd speeds — the classic particle-physics blow-up.)
-   *
-   *   a(p) = strength · (1 − d/r) · d̂  +  swirl · t̂
+   * A pump mounted in a housing — the suction duct on the demo station — points
+   * *up its own duct*: releasing at the eye would embed the droplet in the duct
+   * wall and the launch dies on the spot. Marching out until the path is clear
+   * is the difference between "the pump throws water" and "the pump vibrates".
    */
-  applyFlowField(origin, direction, radius, strength, swirl = 0) {
-    const box = {
-      minX: origin.x - radius,
-      minY: origin.y - radius,
-      maxX: origin.x + radius,
-      maxY: origin.y + radius,
+  clearestRelease(origin, cos, sin, start, max) {
+    const scratch = this._releaseScratch ?? (this._releaseScratch = [])
+    const point = this._releasePoint ?? (this._releasePoint = new Vec2())
+    const step = Math.max(Math.ceil(this.radius), 2)
+    for (let distance = start; distance <= max; distance += step) {
+      point.set(origin.x + cos * distance, origin.y + sin * distance)
+      const candidates = this.world.spatialHash.queryPoint(point.x, point.y, scratch)
+      let blocked = false
+      for (const body of candidates) {
+        if (body.isFluid || body.removed || !body.enabled) continue
+        if (body.userData?.componentType === 'Pump') continue
+        if (body.containsPoint(point)) {
+          blocked = true
+          break
+        }
+      }
+      if (!blocked) return distance
     }
-    const bodies = this.world.spatialHash.queryAABB(box, this._queryScratch)
-    const dirAngle = Math.atan2(direction.y, direction.x)
-    let affected = 0
-    for (const body of bodies) {
+    return max
+  }
+
+  /**
+   * Intake + ballistic launch — the pump model.
+   *
+   * The two models before this one failed in opposite directions, and both are
+   * instructive:
+   *
+   *   · a uniform radial force field can *hold* water against gravity
+   *     indefinitely — it pinned 150 droplets to a 10° ice chute and 44 to a
+   *     closed sluice plate, so a machine could look busy forever without ever
+   *     doing any work;
+   *   · a suction well with a velocity-blend "eye" (`applyDraft`) could draw
+   *     water in but its jet was whatever shape the force field happened to
+   *     produce, and the closing step of the cycle was never reached: the deck
+   *     filled to 18.6 % in 300 s, i.e. 33 of 150 droplets, and stopped.
+   *
+   * This one separates the two jobs a pump actually does:
+   *
+   *   1. **Intake is geometric.** Anything inside `eyeRadius` of the mouth is
+   *      taken, nearest first, at most `intakeRate` per step. A real impeller
+   *      cannot draw water it cannot reach, and treating intake as "in this box"
+   *      means the eye always empties out — no droplet can orbit the mouth.
+   *   2. **Launch is ballistic.** An intake droplet is placed at a *release
+   *      point* one eye radius ahead along `launchSlope` — outside the intake
+   *      radius, so it cannot be swallowed again — and given a velocity that
+   *      carries it along that bearing for exactly this step. The trajectory is
+   *      then set by the ejection speed alone (range = v²·sin 2θ/g), so the jet
+   *      is a *designed* parabola you can aim at a chute instead of an emergent
+   *      force-field artefact.
+   *
+   * Everything in the pool around the mouth still feels a gentle pull so it
+   * refills the eye rather than sitting at the rim, but that pull is weak: it
+   * must never be able to hold water up against gravity.
+   *
+   * @returns {number} droplets launched or drawn this step
+   */
+  applyIntake(origin, direction, dt, {
+    radius = 200,
+    strength = 4000,
+    swirl = 0,
+    eyeRadius = radius * 0.25,
+    suctionRatio = 0.5,
+    /** Launch bearing, in radians from +x. `null` follows the nozzle's own aim. */
+    launchSlope = null,
+    /** Droplets the eye can swallow in a single step. */
+    intakeRate = 2,
+    maxJetSpeed = 900,
+  } = {}) {
+    const candidates = this.world.spatialHash.queryAABB(
+      { minX: origin.x - radius, minY: origin.y - radius, maxX: origin.x + radius, maxY: origin.y + radius },
+      this._queryScratch,
+    )
+    const jetSpeed = Math.min(Math.sqrt(2 * strength * eyeRadius), maxJetSpeed)
+    const suction = strength * suctionRatio
+    const blend = Math.min(1, dt / 0.05)
+    this.lastJetSpeed = jetSpeed
+
+    const intake = []
+    let drawn = 0
+    for (const body of candidates) {
       if (!body.isFluid || body.removed || !body.enabled) continue
       const dx = body.position.x - origin.x
       const dy = body.position.y - origin.y
       const distance = Math.hypot(dx, dy)
       if (distance > radius) continue
+      if (distance <= eyeRadius) {
+        intake.push(body)
+        continue
+      }
+      // Only water at or below the mouth's centre line is drawn in. Screen y
+      // grows downward, so "below the mouth" is dy > 0; the guard keeps the
+      // filled deck (60–150 px *above* the mouth) out of the draft.
+      if (dy < -radius * 0.1) continue
       const falloff = 1 - distance / radius
-      const scale = body.mass * falloff
-      const fx = direction.x * strength * scale
-      const fy = direction.y * strength * scale
-      body.applyForce(new Vec2(fx, fy))
+      const scale = (suction * falloff * body.mass) / (distance || 1)
+      body.applyForce(new Vec2(-dx * scale, -dy * scale))
       if (swirl !== 0) {
-        // Tangential component: rotate the radial vector by ±90°.
-        const tangential = new Vec2(-dy, dx).scale((swirl * falloff * body.mass) / (distance || 1))
-        body.applyForce(tangential)
+        body.applyForce(new Vec2(-dy, dx).scale((swirl * falloff * body.mass) / (distance || 1)))
       }
       body.wake()
-      affected++
+      drawn++
     }
-    return affected
+
+    if (intake.length === 0) {
+      this.lastIntake = 0
+      return drawn
+    }
+
+    // Nearest-first, so a queue at the mouth is served in order and the eye
+    // cannot be monopolised by whichever droplet the hash happened to return.
+    intake.sort((a, b) => a.position.distanceSq(origin) - b.position.distanceSq(origin))
+    const batch = intake.slice(0, intakeRate)
+
+    const bearing = launchSlope === null ? Math.atan2(direction.y, direction.x) : launchSlope
+    const cos = Math.cos(bearing)
+    const sin = Math.sin(bearing)
+    // Where the water leaves the pump. Normally just past the eye, but a pump
+    // mounted inside a housing — the suction duct on the demo station, say — has
+    // to be able to throw water *out* of its own duct: releasing inside a wall
+    // just embeds droplets in it and the jet dies on the spot. So march the
+    // bearing outward past any solid the nozzle is buried in.
+    const release = this.clearestRelease(origin, cos, sin, eyeRadius + this.radius + 1, Math.min(radius, 280))
+    // Subtract one step of travel so that this step's integration — which only
+    // adds gravity — lands the droplet exactly on the speed-`jetSpeed` parabola.
+    const pushed = Math.max(jetSpeed - jetSpeed * dt, 0)
+
+    for (const body of batch) {
+      body.position.set(origin.x + cos * release, origin.y + sin * release)
+      body.velocity.set(cos * pushed, sin * pushed)
+      body.angularVelocity = 0
+      body.wake()
+    }
+
+    this.lastIntake = batch.length
+    return batch.length + drawn
   }
 
   /** Total kinetic energy of the fluid — shown in the debug HUD as a stability check. */

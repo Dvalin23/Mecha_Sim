@@ -68,6 +68,16 @@ export class ToggleSwitch extends Component {
     return this.setOn(!this.state.on)
   }
 
+  /**
+   * The inspector writes through `Component.onPropertyChanged`, which by default
+   * only mutates `properties`. For a switch the *state* is the source of truth
+   * (the canvas click path goes through `setOn`), so without this override the
+   * "Closed (ON)" control in the inspector silently did nothing.
+   */
+  handlePropertyChange(key, value) {
+    if (key === 'on') this.setOn(value)
+  }
+
   onPointerDown(x, y) {
     if (this.properties.momentary) {
       this.state.held = true

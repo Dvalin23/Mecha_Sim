@@ -417,10 +417,23 @@ export class Engine extends Emitter {
 
   // --- undo / redo --------------------------------------------------------
   /** Snapshot the structural scene onto the undo stack. */
+  /**
+   * Push the **current** scene onto the undo stack.
+   *
+   * The engine's mutation events fire *after* the mutation (a component is
+   * removed, then `component:removed` is emitted), so the top of the stack is
+   * always the state you are looking at. Undo therefore means "discard the top
+   * and restore the one underneath", which is what `undo()` below does. The
+   * previous arrangement (push-after-change, undo = pop-and-apply) made the
+   * first undo re-apply the state it was already in — a visible no-op — and it
+   * took two undos to actually go back.
+   */
   commitHistory(label = 'edit') {
     if (this._suppressHistory) return
     const snapshot = { label, scene: serializeScene(this.simulation), selection: this.selectedComponent?.id ?? null }
     const stack = this.history.undo
+    const previous = stack[stack.length - 1]
+    if (previous && sameScene(previous.scene, snapshot.scene)) return
     stack.push(snapshot)
     if (stack.length > this.history.limit) stack.shift()
     this.history.redo.length = 0
@@ -442,18 +455,19 @@ export class Engine extends Emitter {
   }
 
   undo() {
-    const snapshot = this.history.undo.pop()
-    if (!snapshot) return false
-    this.history.redo.push({ ...snapshot, selection: this.selectedComponent?.id ?? null })
-    this._applySnapshot(snapshot)
-    this.emit('history:changed', { undo: this.history.undo.length, redo: this.history.redo.length })
+    const stack = this.history.undo
+    // Two entries are needed: the top *is* the current state.
+    if (stack.length < 2) return false
+    this.history.redo.push(stack.pop())
+    this._applySnapshot(stack[stack.length - 1])
+    this.emit('history:changed', { undo: stack.length, redo: this.history.redo.length })
     return true
   }
 
   redo() {
     const snapshot = this.history.redo.pop()
     if (!snapshot) return false
-    this.history.undo.push({ ...snapshot, selection: this.selectedComponent?.id ?? null })
+    this.history.undo.push(snapshot)
     this._applySnapshot(snapshot)
     this.emit('history:changed', { undo: this.history.undo.length, redo: this.history.redo.length })
     return true
@@ -466,13 +480,29 @@ export class Engine extends Emitter {
     return this
   }
 
-  static fromPayload(payload, options) {
-    return deserializeProject(payload, options)
+  /**
+   * Build an `Engine` directly from a stored payload.
+   *
+   * The static used to return the `Simulation` built by `deserializeProject`,
+   * which made `Engine.fromPayload(...)` name a `Simulation` — a trap for the
+   * loading path in the UI. Pass `canvas: null` (the default) for headless use.
+   */
+  static fromPayload(payload, options = {}) {
+    const simulation = deserializeProject(payload, options)
+    const engine = new Engine({ canvas: options.canvas ?? null, simulation, autoStart: false, ...options })
+    engine.fitView()
+    return engine
   }
 
   get componentCount() {
     return this.simulation.components.size
   }
+}
+
+/** Cheap structural equality for two serialized scenes (used to dedupe history). */
+const sameScene = (a, b) => {
+  if (a.nodes.length !== b.nodes.length || a.edges.length !== b.edges.length) return false
+  return JSON.stringify(a) === JSON.stringify(b)
 }
 
 const round = (value, decimals = 2) => {

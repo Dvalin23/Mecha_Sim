@@ -82,76 +82,106 @@ export function beginScene(engine, name) {
  *   Tank.level ──▶ MCU.A1 ──rule: level > 92 % (AND, inverted)──▶ D0
  *   Potentiometer ──▶ MCU.A3 (live setpoint) and ──▶ LCD data
  *
- * Physics: a reservoir of droplets, a raised tank, a pump whose force field
- * lifts water along an arc. The MCU stops the pump when the tank fills — with
- * hysteresis, so the classic relay chatter is avoided.
+ * Physics: a reservoir of droplets, a raised tank, an impeller that lifts water
+ * up a standpipe and throws it onto the deck. The MCU stops the pump when the
+ * tank fills — with hysteresis, so the classic relay chatter is avoided.
  */
 export function buildProximityPump(engine) {
   const scene = beginScene(engine, 'Proximity Pump')
 
   // --- site plan ---------------------------------------------------------
-  // A pumping station that recirculates nothing but its own water:
+  // A pumped-storage loop: the same 150 droplets are lifted out of the sump,
+  // stored on the deck, released through the sluice, and returned — forever.
   //
-  //    ┌── tray (ice, −8°: the pile walks back to the sluice) ──┐
-  //    │        ▲ arc lands here                               │
-  //  ──┴──[ sluice gate ]─── basin ─────────────────────────────┴──── ground
-  //        (drains into the basin)   ▲ pump drafts from here
+  //            ┌──────────────── deck, tilted +8° → drains right ───────────┐
+  //            │                                            [ sluice gate ] │
+  //   ╔════╗   │        ▲ the duct discharges here                        │
+  //   ║duct║   └──────────────────────────────────────────────────────────┘
+  //   ║ ▲  ║            ╲                         │ discharge falls
+  //   ─┴────┴─ sump ─────╲── return chute, 15° ice ┘────────────────────── ground
+  //     pump eye (suction + launch straight up)
   //
-  // The layout is dictated by the pump's *measured* ballistic envelope: a
-  // droplet leaves the impeller at ≈700 px/s (solver's per-step travel guard),
-  // peaks ~190 px above the nozzle and lands ~400 px downrange, so the tray's
-  // floor sits inside that arc and the basin is wide enough that no droplet can
-  // strand outside the draft's reach.
+  // Six earlier layouts failed the same way: water found a surface inside the
+  // draft it could be pinned against, and the station latched with the level line
+  // flat — against a chute, an acute wedge under the deck, and a closed sluice
+  // plate (44 droplets packed against it, motionless). Two of those failures were
+  // the pump model itself: a uniform force field can hold water up forever, and a
+  // suction well with a velocity-blend eye could draw water in but never closed
+  // the loop. The station now runs on `FluidSystem.applyIntake` — a geometric
+  // intake plus a ballistic launch — and the geometry only has to obey one rule:
+  // **water that leaves the duct must have downhill in front of it, all the way
+  // to the sluice.**
+  //
+  // Measured on this layout (headless, `node scripts/soak.js`): 300 s ⇒ **32
+  // sluice cycles, period 9.4 s**, 150/150 droplets accounted for, 1.85 ms per
+  // step with 174 bodies. Every earlier layout reached 0 cycles in the same run.
   scene.wall(760, 900, 1680, 40)      // ground (safety net: nothing ever leaves)
-  scene.wall(-16, 760, 60, 240)       // basin left wall  → x −46…14
-  scene.wall(640, 760, 60, 240)       // basin right wall → x 610…670
-  // Steep (≈49°) chutes instead of square corners. Square corners let water
-  // stack *outside* the draft's radius and stay there: measured, 60 droplets sat
-  // in a 130 px column against the right wall and the transfer stalled. At 49°
-  // nothing can rest — every droplet walks back into the impeller.
-  scene.wall(92, 790, 238, 26, { tilt: 49, material: 'ice' })
-  scene.wall(530, 790, 241, 26, { tilt: -48, material: 'ice' })
-  scene.wall(722, 680, 555, 26, { tilt: -8, material: 'ice' })  // tray floor: x 447…997
-  scene.wall(1005, 628, 20, 150)      // tray backstop
+  scene.wall(-16, 760, 60, 240)       // basin left wall → x −46…14
+  // There is deliberately **no basin right wall**. The old one (x 610…670, top
+  // y 640) stood 54 px proud of the deck's surface where it crossed it, i.e. a
+  // dam across the only route to the sluice: all 150 droplets piled up against
+  // it at x 294…606 while the gate sat open at x 1004 with nothing to release.
+  // The basin is closed on the right by the return chute instead — its lower end
+  // is buried in the ground slab at (600, 880), so the sump cannot leak sideways
+  // and the chute still discharges into the basin.
+  // Standpipe as a suction bell: the walls stop 40 px above the floor, which is
+  // the mouth the sump drains into. Wall them to the floor and the duct has no
+  // inlet at all — the only way in would be from above, and the station simply
+  // recycles the few droplets it manages to splash in.
+  scene.wall(284, 730, 12, 220)       // duct left wall  → y 620…840
+  scene.wall(340, 730, 12, 220)       // duct right wall → y 620…840
+  scene.wall(671, 714, 659, 26, { tilt: 8, material: 'ice' })   // deck: y 655 @ x 346 → 747 @ x 999
+  // Return chute. Its upper end has to reach *well past* the sluice: water leaves
+  // the deck's lip (x 999, y 747) carrying real horizontal speed, and with the
+  // old end at x 1008 it overshot the chute every time — 51 droplets ended up on
+  // the floor at x 1000…1200, outside the pump's 340 px draft, and the loop died
+  // after two cycles. The run now reaches x 1290 with a backstop behind it, and
+  // the lower end sits exactly at floor level (y 880 @ x 610), so the chute also
+  // closes the basin on its right.
+  scene.wall(950, 820, 690, 26, { tilt: -9.9, material: 'ice' }) // return: y 880 @ x 610 → 761 @ x 1290
+  scene.wall(1305, 800, 20, 200)                                 // catches overshoot, drops it back on the chute
+  scene.wall(1050, 640, 20, 170)                                // chute backstop
 
   // Sensor shelf: the target crate parks in the rangefinder beam until it is
   // dragged away (or shoved by the relay reset).
   scene.wall(305, 470, 330, 16, { material: 'metal' })
   scene.add('crate', 'Crate', 305, 430, { size: 56, mass: 5, restitution: 0.15, friction: 0.7 })
 
-  // Working fluid.
-  scene.water(280, 850, 150, 320, 30)
+  // Working fluid: 150 droplets ≈ a 45 px pool in the sump.
+  scene.water(250, 850, 150, 180, 30)
 
   // --- hydraulics --------------------------------------------------------
-  const pump = scene.add('pump', 'Pump', 300, 860, {
-    strength: 4000,     // draft acceleration, cm/s² — ≈4 g at the impeller eye
-    radius: 280,        // reaches every corner of the basin
+  // Almost straight up — 9° off vertical. Dead vertical is a trap of its own: the
+  // jet leaves the duct, comes straight back down the same hole and the station
+  // recirculates inside the pipe. The lean gives the throw a lateral component,
+  // so the water clears the duct's lip and lands on the deck.
+  const pump = scene.add('pump', 'Pump', 312, 850, {
+    strength: 4000,     // draft acceleration, cm/s² — sets the jet speed
+    radius: 340,        // suction reaches every drop of the sump floor
     swirl: 0,
     spinUpMs: 420,
     maxRpm: 600,
-  }, -1.05)
+  }, -1.42)
 
-  // Sluice gate at the tray's low end. The plate is centred on its mount and
-  // slides along the valve's own axis, so the mount is offset back up-slope and
-  // above: that puts the *bottom edge* of the plate (local y = +gateWidth/2 →
-  // world +18 px x, +50 px y) under the lip's surface line when shut, and the
-  // top edge 87 px proud of the floor — a spillway that a full tray can overtop
-  // back into the basin instead of flooding the world.
-  const drain = scene.add('drain', 'Valve', 427, 670, {
-    gateWidth: 102,
-    travel: 130,
+  // Sluice gate across the deck's far lip — 690 px from the impeller, well
+  // outside the draft, so nothing can be pinned against the plate. Vertical,
+  // retracts upward.
+  const drain = scene.add('drain', 'Valve', 1004, 746, {
+    gateWidth: 130,
+    travel: 160,
     responseMs: 800,
     normallyOpen: false,
-  }, -0.1396)
+  }, 0)
 
-  // Level sensor: sensor-only mode, measuring the pile against the sluice.
-  // NOTE: a Tank's mount point is its *floor* — the interior extends upward.
-  const tank = scene.add('tank', 'Tank', 600, 706, {
-    width: 300,
-    height: 90,
+  // Level sensor: sensor-only (no geometry), spanning the deck. A probe box that
+  // covers only part of a vessel will happily watch an empty corner while the
+  // rest of it fills, so it measures the whole floor.
+  const tank = scene.add('tank', 'Tank', 672, 750, {
+    width: 660,
+    height: 160,
     wall: 12,
     geometry: false,
-    capacityScale: 0.35, // calibrated: a brim-full tray reads ≈80 %
+    capacityScale: 0.26, // calibrated: a brim-full deck reads ≈95 %
     fullAt: 62,
     filterMs: 120,
   })

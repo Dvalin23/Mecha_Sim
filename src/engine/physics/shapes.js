@@ -180,7 +180,12 @@ export class PolygonShape {
   }
 
   setVertices(vertices) {
-    this.vertices = vertices.map((v) => (v instanceof Vec2 ? v.clone() : new Vec2(v.x, v.y)))
+    // Accepts Vec2 instances, `{x, y}` objects *and* `[x, y]` pairs. The array
+    // form matters: `serialize()` emits pairs, so a polygon that went through
+    // the wire format and back used to come out as a shape full of NaN.
+    this.vertices = vertices.map((v) =>
+      v instanceof Vec2 ? v.clone() : Array.isArray(v) ? new Vec2(v[0], v[1]) : new Vec2(v.x, v.y),
+    )
     this.normals = []
     this.boundingRadius = 0
     for (let i = 0; i < this.vertices.length; i++) {
@@ -206,9 +211,45 @@ export class PolygonShape {
     return Math.abs(sum) / 2
   }
 
+  /** Area centroid of the polygon in local coordinates. */
+  get centroid() {
+    const centroid = new Vec2(0, 0)
+    let area = 0
+    const n = this.vertices.length
+    for (let i = 0; i < n; i++) {
+      const p1 = this.vertices[i]
+      const p2 = this.vertices[(i + 1) % n]
+      const cross = p1.cross(p2)
+      area += cross
+      centroid.x += (p1.x + p2.x) * cross
+      centroid.y += (p1.y + p2.y) * cross
+    }
+    if (Math.abs(area) < 1e-12) return centroid
+    return centroid.scale(1 / (3 * area))
+  }
+
   /**
-   * Polygon moment of inertia about the centroid (standard decomposition into
-   * triangle fans). Returned in the same units as `mass`.
+   * Polygon moment of inertia about the **centroid**, in the same units as
+   * `mass` (standard triangle-fan decomposition plus the parallel-axis shift).
+   *
+   * The fan integral gives the second moment about the *local origin*, which is
+   * only the centroid moment if the vertices happen to be centred on it. Two
+   * corrections were needed here and both were measured against the closed-form
+   * result for a solid box, I = m(w² + h²)/12:
+   *
+   * The fan integral gives the second moment about the *local origin*, which is
+   * only the centroidal moment if the vertices happen to be centred on it. Three
+   * things were wrong here, and every one of them was checked against the closed
+   * form for a solid rectangle, I = m(w² + h²)/12:
+   *
+   *   · the fan sum must be divided by **12**, not 6 — the old constant made
+   *     every polygon exactly twice as hard to spin as the real thing;
+   *   · the cross products must stay **signed**. Taking `Math.abs` per edge is
+   *     only harmless when the origin sees every vertex in the same rotational
+   *     order; for a polygon that does not contain the origin the fan triangles
+   *     cancel, and the absolute value throws that cancellation away (a 40×40
+   *     square sitting at (120, 120) reported I ≈ 180,800 instead of 58,133);
+   *   · an off-centre polygon then needs I_centroid = I_origin − m·d².
    */
   computeMass(mass) {
     const area = this.area
@@ -217,11 +258,12 @@ export class PolygonShape {
     for (let i = 0; i < this.vertices.length; i++) {
       const p1 = this.vertices[i]
       const p2 = this.vertices[(i + 1) % this.vertices.length]
-      const cross = Math.abs(p1.cross(p2))
-      numerator += cross * (p1.dot(p1) + p1.dot(p2) + p2.dot(p2))
+      numerator += p1.cross(p2) * (p1.dot(p1) + p1.dot(p2) + p2.dot(p2))
     }
     const density = mass / area
-    this.inertiaFactor = (density / 6) * numerator
+    const aboutOrigin = (density / 12) * Math.abs(numerator)
+    const c = this.centroid
+    this.inertiaFactor = Math.max(aboutOrigin - mass * c.lengthSq(), 1e-9)
     return this.inertiaFactor
   }
 

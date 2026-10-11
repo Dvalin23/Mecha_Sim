@@ -23,9 +23,12 @@ export default defineConfig({
     chunkSizeWarningLimit: 900,
     rollupOptions: {
       output: {
-        manualChunks: {
-          react: ['react', 'react-dom'],
-        },
+        // Vite 8 runs on Rolldown, where `manualChunks` takes a function — the
+        // object form builds with a warning and then dies at link time. Splitting
+        // the framework out keeps the engine's own chunk cacheable across UI
+        // changes, which is the whole point of the split.
+        manualChunks: (id) =>
+          /node_modules[\\/](react|react-dom|scheduler)[\\/]/.test(id) ? 'react' : undefined,
       },
     },
   },

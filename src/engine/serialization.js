@@ -222,7 +222,7 @@ export function deserializeProject(payload, options = {}) {
     gravity: env.gravity ?? 981,
     timestep: env.timestep ?? 1 / 60,
     bounds: env.bounds ?? { width: 1600, height: 900 },
-    fluid: upgraded.fluid ?? options.fluid,
+    fluid: options.fluidConfig ?? {}, // water itself is replayed by restoreScene
   })
   restoreScene(simulation, upgraded, options)
   return simulation

@@ -128,7 +128,10 @@ export class PIRSensor extends Component {
     }
 
     const now = ctx?.simulation?.world?.time ?? 0
-    const triggered = fastest >= props.sensitivity
+    // Strictly faster than the threshold: the docstring says "moving faster than
+    // `sensitivity`", and `>=` made a sensitivity of 0 latch HIGH forever — every
+    // stationary body in the cone counted as motion.
+    const triggered = fastest > props.sensitivity
     if (triggered) {
       if (now - this.state.lastTriggerAt > 0.15) this.state.triggers++
       this.state.lastTriggerAt = now

@@ -213,12 +213,19 @@ canvas → React selection flows through `CustomEvent('entitySelected')`.
   registry, a real simulation ran under the canvas and the stubbed context saw
   thousands of draw calls. The render path is the one thing a headless physics
   probe cannot cover, so it gets its own harness.
-- **Tests found four bugs that inspection had missed**: the axis-aligned raycast
+- **Tests found bugs that inspection had missed**: the axis-aligned raycast
   (parallel-face slab test inverted, so a rangefinder aimed straight at a wall
   reported nothing), polygon inertia (fan sum divided by 6 instead of 12, and
   `Math.abs` per edge destroying the cancellation for off-origin polygons), undo
   history (snapshots pushed *after* each mutation, so the first undo was a
   no-op), and a normally-closed relay that booted showing OPEN.
+- **The smoke harness earned its keep too.** jsdom reports an exception thrown
+  inside an event listener as a `jsdomError`, which never reaches
+  `window.console.error` — so the harness subscribes to the virtual console and
+  fails on it. That is how `Palette`'s click-to-add was caught: the handler
+  declared `const hostRef = hostRef.current`, which shadows the ref inside its
+  own scope and threw a TDZ `ReferenceError` on every palette click in the real
+  app. Clicking a part now adds it (the check asserts 24 → 25 components).
 - **`payloadSizeLimit` and the rules schema are shared** between the browser and
   the server. Validation is not a server-side detail bolted on afterwards; the
   same module runs in both places.

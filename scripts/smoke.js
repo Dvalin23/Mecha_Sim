@@ -16,7 +16,7 @@
  * saves the scene through the real serializer + Zod schema, loads it back, and
  * reports pass/fail with a call census from the context stub.
  */
-import { JSDOM } from 'jsdom'
+import { JSDOM, VirtualConsole } from 'jsdom'
 import { FluidSystem } from '../src/engine/FluidSystem.js'
 
 const WIDTH = 1280
@@ -79,9 +79,17 @@ const check = (label, condition, detail = '') => {
 }
 
 async function main() {
+  // jsdom reports an exception thrown inside an event listener as a
+  // `jsdomError`, which never touches `window.console.error`. Without this the
+  // harness would happily pass a UI whose click handlers all throw.
+  const pageErrors = []
+  const virtualConsole = new VirtualConsole()
+  virtualConsole.on('jsdomError', (error) => pageErrors.push(`${error.type ?? 'error'}: ${error.message}`))
+  virtualConsole.on('error', (...args) => pageErrors.push(args.join(' ')))
+
   const dom = new JSDOM(
     `<!doctype html><html><body><div id="root" style="width:${WIDTH}px;height:${HEIGHT}px"></div></body></html>`,
-    { pretendToBeVisual: true, url: 'http://localhost:5173/' },
+    { pretendToBeVisual: true, url: 'http://localhost:5173/', virtualConsole },
   )
   const { window } = dom
 
@@ -227,7 +235,10 @@ async function main() {
   const { createElement } = await import('react')
   const { App } = await vite.ssrLoadModule('/src/ui/App.jsx')
   const rootElement = document.getElementById('root')
-  const errors = []
+  // App publishes its engine host on the canvas (documented in App.jsx), which
+  // is how the harness drives the real controls below.
+  const app_engine = () => document.querySelector('canvas')?.__mechasimHost?.engine ?? null
+  const errors = pageErrors
   const originalError = window.console.error
   window.console.error = (...args) => {
     errors.push(args.join(' '))
@@ -241,8 +252,43 @@ async function main() {
   check('toolbar present', html.includes('MechaSim'))
   check('palette rendered from the registry', html.includes('Ultrasonic') && html.includes('Relay'))
   check('canvas mounted', html.includes('<canvas'))
+  // Let the engine emit a few `stats` events (it throttles them to 4 Hz) so the
+  // status bar renders live numbers instead of its boot placeholder.
+  for (let i = 0; i < 40; i++) pump(16.7)
+  await new Promise((resolve) => setTimeout(resolve, 40))
+  const liveHtml = rootElement.innerHTML
+  const appEngine = app_engine()
+  check('status bar shows live engine stats',
+    /fps/.test(liveHtml) && /physics/.test(liveHtml) && !liveHtml.includes('Engine starting'),
+    `${(liveHtml.match(/(\d+) fps/) ?? [])[0] ?? 'no fps text'} · engine.stats.totalSteps=${appEngine?.stats?.totalSteps}`)
+
+  // Drive the real controls the way a user does: click the pause button, add a
+  // component from the palette, and move a slider.
+  const click = (element) => {
+    element.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }))
+  }
+  const buttons = [...rootElement.querySelectorAll('button')]
+  const pause = buttons.find((button) => /pause|run/i.test(button.textContent))
+  const wasRunning = app_engine()?.running
+  if (pause) click(pause)
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  check('toolbar pause toggles the engine', Boolean(pause) && app_engine()?.running !== wasRunning,
+    `running ${wasRunning} → ${app_engine()?.running}`)
+  if (pause) click(pause)
+
+  const paletteItem = [...rootElement.querySelectorAll('.palette-item')].find((item) =>
+    /Crate/i.test(item.textContent),
+  )
+  const countBefore = app_engine()?.componentCount ?? 0
+  if (paletteItem) click(paletteItem)
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  check('palette click adds a component to the live simulation',
+    Boolean(paletteItem) && (app_engine()?.componentCount ?? 0) === countBefore + 1,
+    `${countBefore} → ${app_engine()?.componentCount}`)
+
   for (let i = 0; i < 4; i++) pump(16.7)
-  check('react warnings/errors', errors.length === 0, errors.slice(0, 2).join(' | '))
+  check('react + page errors while driving the UI', errors.length === 0,
+    errors.slice(0, 3).join(' | ') || 'clean')
   root.unmount()
   window.console.error = originalError
 

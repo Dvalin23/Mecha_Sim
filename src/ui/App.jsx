@@ -56,6 +56,10 @@ export function App() {
       },
     })
     hostRef.current = host
+    // Handy from the browser console, and it is how `npm run smoke` reaches the
+    // running engine to drive the real controls. The engine itself stays vanilla:
+    // nothing here is part of its API.
+    if (canvasRef.current) canvasRef.current.__mechasimHost = host
     setDemoId(host.demos[0]?.id ?? null)
     setRunning(true)
     setReady(true)
@@ -102,22 +106,17 @@ export function App() {
   const engine = host?.engine ?? null
 
   const onAdd = useCallback((type, clientPoint) => {
-    const hostRef = hostRef.current
-    if (!hostRef) return
+    // NB: do not name this local `hostRef` — inside this scope that name would
+    // shadow the ref itself and `hostRef.current` would throw a TDZ
+    // ReferenceError the moment anyone clicked a palette entry.
+    const running = hostRef.current
+    if (!running) return
     const canvas = canvasRef.current
-    let position = { x: 400, y: 300 }
-    if (clientPoint && canvas) {
-      const rect = canvas.getBoundingClientRect()
-      const world = hostRef.engine.camera.screenToWorld(clientPoint.x - rect.left, clientPoint.y - rect.top)
-      position = { x: Math.round(world.x), y: Math.round(world.y) }
-    } else {
-      const world = hostRef.engine.camera.screenToWorld(
-        canvas.clientWidth / 2 + 40,
-        canvas.clientHeight / 2 + 20,
-      )
-      position = { x: Math.round(world.x), y: Math.round(world.y) }
-    }
-    hostRef.engine.addComponent(type, position)
+    const screen = clientPoint
+      ? { x: clientPoint.x - canvas.getBoundingClientRect().left, y: clientPoint.y - canvas.getBoundingClientRect().top }
+      : { x: (canvas?.clientWidth ?? 1280) / 2 + 40, y: (canvas?.clientHeight ?? 720) / 2 + 20 }
+    const world = running.engine.camera.screenToWorld(screen.x, screen.y)
+    running.engine.addComponent(type, { x: Math.round(world.x), y: Math.round(world.y) })
   }, [])
 
   const onDrop = useCallback(
@@ -130,9 +129,9 @@ export function App() {
   )
 
   const onDemo = useCallback((id) => {
-    const hostRef = hostRef.current
-    if (!hostRef) return
-    hostRef.loadDemo(id)
+    const running = hostRef.current
+    if (!running) return
+    running.loadDemo(id)
     setDemoId(id)
   }, [])
 

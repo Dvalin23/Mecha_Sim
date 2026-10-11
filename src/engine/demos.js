@@ -47,13 +47,9 @@ export class SceneBuilder {
     return { left, right, bottom }
   }
 
+  /** Pour a block of water; recorded as a scene initial condition. */
   water(x, y, count, spreadX = 90, spreadY = 60) {
-    const fluid = this.simulation.fluid
-    for (let i = 0; i < count; i++) {
-      const px = x + ((i % 14) - 7) * (spreadX / 14) + (Math.random() - 0.5) * 3
-      const py = y - Math.floor(i / 14) * (spreadY / 8) + (Math.random() - 0.5) * 3
-      fluid.spawn(px, py, 0, 0)
-    }
+    this.simulation.fluid.fill(x, y, count, spreadX, spreadY)
     return this
   }
 
@@ -128,10 +124,10 @@ export function buildProximityPump(engine) {
 
   // --- hydraulics --------------------------------------------------------
   const pump = scene.add('pump', 'Pump', 300, 860, {
-    strength: 3200,     // draft acceleration, cm/s² — ≈3 g at the impeller eye
+    strength: 4000,     // draft acceleration, cm/s² — ≈4 g at the impeller eye
     radius: 280,        // reaches every corner of the basin
     swirl: 0,
-    spinUpMs: 600,
+    spinUpMs: 420,
     maxRpm: 600,
   }, -1.05)
 

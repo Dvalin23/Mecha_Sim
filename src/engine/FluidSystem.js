@@ -1,6 +1,8 @@
 import { Vec2 } from './math/Vec2.js'
 import { BodyType, Layer } from './physics/RigidBody.js'
 import { CircleShape } from './physics/shapes.js'
+import { RigidBody } from './physics/RigidBody.js'
+import { Manifold, collide } from './physics/collisions.js'
 import { mulberry32 } from './math/utils.js'
 
 /**
@@ -45,6 +47,8 @@ export class FluidSystem {
 
     this.pool = []
     this.active = []
+    /** Initial water fills: part of the scene, so they survive save/reset. */
+    this.initialFills = []
     this.emitters = new Map()
     this._queryScratch = []
   }
@@ -53,8 +57,41 @@ export class FluidSystem {
     return this.active.length
   }
 
+  /**
+   * Fill a rectangular region with droplets and *remember* it as an initial
+   * condition of the scene.
+   *
+   * The fill descriptor (not the individual particles) is what gets serialized,
+   * so a saved project stays a few hundred bytes instead of carrying a thousand
+   * droplet coordinates — and a reset re-creates exactly the water the scene
+   * started with.
+   */
+  fill(x, y, count, spreadX = 90, spreadY = 60, { record = true } = {}) {
+    const columns = 14
+    const rows = Math.max(1, Math.ceil(count / columns))
+    for (let i = 0; i < count; i++) {
+      const px = x + ((i % columns) - (columns - 1) / 2) * (spreadX / columns) + (this.random() - 0.5) * 3
+      const py = y - Math.floor(i / columns) * (spreadY / rows) + (this.random() - 0.5) * 3
+      this.spawn(px, py, 0, 0)
+    }
+    if (record) this.initialFills.push({ x, y, count, spreadX, spreadY })
+    return this
+  }
+
   /** Spawn a droplet at (x, y) with an initial velocity. */
-  spawn(x, y, vx = 0, vy = 0) {
+  /**
+   * Spawn one droplet.
+   *
+   * `depenetrate` (default) nudges the droplet out of anything solid it was
+   * born inside. A water fill that overlaps a wall, a nozzle poking through a
+   * floor or a user painting water into a ledge would otherwise strand droplets
+   * *inside* static geometry, where the solver has no valid contact normal to
+   * eject them along and they are simply lost (culled once they sink out of
+   * the world). The fix reuses the narrow phase rather than inventing a second
+   * geometry path: run the real circle-vs-shape collision and walk the droplet
+   * back out along the contact normal.
+   */
+  spawn(x, y, vx = 0, vy = 0, { depenetrate = true } = {}) {
     let body = this.pool.pop()
     if (!body) {
       if (this.active.length >= this.maxParticles) {
@@ -96,8 +133,57 @@ export class FluidSystem {
       body.removed = false
       this.world._pendingRemoval = this.world._pendingRemoval.filter((b) => b !== body)
     }
+    if (depenetrate) this.depenetrate(body)
     this.active.push(body)
     return body
+  }
+
+  /**
+   * Push a droplet out of any static body containing it, one contact at a time
+   * (bounded so a pathological scene cannot spin here). Returns the number of
+   * pushes applied — handy in tests.
+   */
+  depenetrate(body, maxPasses = 4) {
+    const probe = this._probe ?? (this._probe = { manifold: new Manifold(), body: null })
+    if (!probe.body) {
+      probe.body = new RigidBody({
+        shape: new CircleShape(this.radius),
+        position: new Vec2(0, 0),
+        bodyType: BodyType.DYNAMIC,
+        mass: 1,
+        layer: Layer.FLUID,
+        mask: Layer.DEFAULT | Layer.TERRAIN | Layer.FLUID,
+        tag: 'fluid-probe',
+      })
+      probe.body.inertia = 1
+      probe.body.invInertia = 1
+    }
+    const scratch = probe.body
+    let pushes = 0
+    for (let pass = 0; pass < maxPasses; pass++) {
+      let moved = false
+      for (const other of this.world.bodies) {
+        if (other === body || other.removed || !other.isStatic) continue
+        if (!other.aabb.overlaps(body.aabb)) continue
+        scratch.setPosition(body.position.x, body.position.y)
+        probe.manifold.reset()
+        // The probe has the droplet's own radius, so the separation it reports
+        // is already measured against the sprayed circle's surface.
+        if (!collide(probe.manifold, scratch, other)) continue
+        const contact = probe.manifold.contacts[0]
+        if (!contact) continue
+        const push = Math.min(-contact.separation + this.radius * 0.1, this.radius * 4)
+        if (push <= 0) continue
+        body.setPosition(
+          body.position.x - probe.manifold.normal.x * push,
+          body.position.y - probe.manifold.normal.y * push,
+        )
+        pushes += 1
+        moved = true
+      }
+      if (!moved) break
+    }
+    return pushes
   }
 
   /** Remove a droplet and return it to the pool. */

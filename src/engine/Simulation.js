@@ -1,5 +1,6 @@
 import { World } from './physics/World.js'
 import { FluidSystem } from './FluidSystem.js'
+import { restoreScene, serializeScene } from './serialization.js'
 import { ComponentPhase, neutralValue } from './Component.js'
 import { uuid } from './ids.js'
 import { Vec2 } from './math/Vec2.js'
@@ -274,18 +275,28 @@ export class Simulation extends Emitter {
   }
 
   // --- whole-scene operations --------------------------------------------
+  /**
+   * Rewind to the scene's *initial* state.
+   *
+   * Was a stub that cleared every component and reinstantiated nothing (the id
+   * counter even kept climbing), so a reset scene was an empty world. It now
+   * serialises to the same node/edge form the sharing pipeline uses, tears the
+   * simulation down and feeds the snapshot back through `restoreScene` — one
+   * code path for time-travel *and* save/load, so the two cannot drift apart.
+   */
   reset() {
+    const scene = serializeScene(this)
     this.world.clear()
     this.fluid.clear()
     this.fluid = new FluidSystem(this.world, {})
     this.traces.clear()
-    const snapshot = this.componentList.map((c) => c.serialize())
-    // Rebuild every component from its serialized form (restores initial state).
     this.components.clear()
-    this.edges = []
+    this.edges.length = 0
+    this._sequence = 0
     this._scheduleDirty = true
     this._rebuilding = []
-    return snapshot
+    restoreScene(this, scene)
+    return scene
   }
 
   get stats() {

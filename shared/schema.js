@@ -14,6 +14,8 @@ import { componentTypes } from '../src/engine/registry.js'
 
 /** Hard limits — a malformed or hostile payload cannot exhaust the server. */
 export const LIMITS = {
+  /** Upper bound on stored water fills per scene. */
+  maxFills: 32,
   maxNodes: 500,
   maxEdges: 1500,
   maxParticles: 600,
@@ -121,8 +123,25 @@ export const environmentSchema = z
   })
   
 
-export const fluidSchema = z
-  .object({
+/**
+ * One "pour": a rectangular block of water the scene starts with.
+ *
+ * The wire format stores fills rather than individual particles, which keeps a
+ * 260-droplet scene at ~40 bytes of water instead of ~260 coordinate pairs — and
+ * it is what a reset replays to restore the initial condition exactly.
+ */
+export const fillSchema = z.object({
+  x: COORD,
+  y: COORD,
+  count: z.number().int().min(0).max(LIMITS.maxParticles),
+  spreadX: z.number().finite().min(0).max(LIMITS.maxCoordinate).default(90),
+  spreadY: z.number().finite().min(0).max(LIMITS.maxCoordinate).default(60),
+})
+
+export const fluidSchema = z.union([
+  z.array(fillSchema).max(LIMITS.maxFills),
+  // v1/v2 payloads serialized the raw particle list; still accepted on import.
+  z.object({
     seed: z.number().int().finite().optional(),
     maxParticles: z.number().int().min(0).max(LIMITS.maxParticles).default(260),
     radius: z.number().finite().min(1).max(40).default(5),
@@ -130,7 +149,8 @@ export const fluidSchema = z
       .array(z.tuple([COORD, COORD]))
       .max(LIMITS.maxParticles)
       .default([]),
-  })
+  }),
+])
   
 
 export const projectPayloadSchema = z

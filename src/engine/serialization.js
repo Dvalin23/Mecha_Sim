@@ -43,7 +43,7 @@ export const emptyProject = (name = 'Untitled Simulation') => ({
   },
   nodes: [],
   edges: [],
-  fluid: { maxParticles: 260, radius: 5, particles: [] },
+  fluid: [],
 })
 
 /** Flat, reference-free representation of one component. */
@@ -76,6 +76,9 @@ export function serializeScene(simulation) {
       to: { ...edge.to },
       kind: edge.kind,
     })),
+    // Water is stored as *fills*, not particles: a scene's initial condition
+    // stays a handful of numbers instead of a thousand coordinates.
+    fluid: (simulation.fluid?.initialFills ?? []).map((fill) => ({ ...fill })),
   }
 }
 
@@ -97,7 +100,7 @@ export function serializeProject(simulation, meta = {}) {
     },
     nodes: scene.nodes,
     edges: scene.edges,
-    fluid: simulation.fluid.serialize(),
+    fluid: (simulation.fluid?.initialFills ?? []).map((fill) => ({ ...fill })),
     meta: {
       componentCount: scene.nodes.length,
       wireCount: scene.edges.length,
@@ -191,8 +194,18 @@ export function restoreScene(simulation, scene, { silent = false } = {}) {
     }
   }
 
+  // Water: replay the scene's initial fills (compact + semantic). A v2 payload
+  // that carried a literal particle list is still honoured.
+  simulation.fluid.initialFills = []
   if (scene.fluid?.particles?.length) {
     simulation.fluid.deserialize(scene.fluid)
+  } else {
+    for (const fill of Array.isArray(scene.fluid) ? scene.fluid : []) {
+      simulation.fluid.fill(fill.x, fill.y, fill.count, fill.spreadX, fill.spreadY, { record: false })
+      simulation.fluid.initialFills.push({
+        x: fill.x, y: fill.y, count: fill.count, spreadX: fill.spreadX, spreadY: fill.spreadY,
+      })
+    }
   }
   if (!silent) simulation.emit('scene:restored', { nodes: idMap.size, edges: edges.length })
   simulation._scheduleDirty = true
